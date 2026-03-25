@@ -9,7 +9,7 @@ html,body{height:100%;overflow:hidden}
 :root{--bg:#0c0d0e;--fg:#e6e8eb;--muted:#858b93;--line:#1f2329;--panel:#121417;--accent:#7aa2ff}
 *{box-sizing:border-box;font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Inter,Helvetica Neue,Arial,sans-serif}
 body{margin:0;background:var(--bg);color:var(--fg);height:100vh;display:flex;flex-direction:column}
-header{display:flex;align-items:center;gap:.75rem;padding:.7rem 1rem;background:var(--panel);border-bottom:1px solid var(--line)}
+header{display:flex;align-items:center;gap:.75rem;padding:.7rem 1rem;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
 header input[type="text"],header select{background:#0d0f12;border:1px solid var(--line);color:var(--fg);padding:.45rem .55rem;border-radius:.4rem;font-size:.85rem}
 main{display:grid;grid-template-columns:320px 1fr;flex:1 1 auto;min-height:0;overflow:hidden}
 #list{overflow-y:auto;border-right:1px solid var(--line)}
@@ -31,23 +31,32 @@ pre{white-space:pre-wrap;overflow-x:auto;background:#101216;padding:.6rem;border
 footer{display:flex;align-items:center;gap:.5rem;padding:.7rem 1rem;border-top:1px solid var(--line);background:linear-gradient(180deg,rgba(12,13,14,0),#0c0d0e 40%);flex:0 0 auto;flex-wrap:wrap}
 .collapsed{max-height:8.5rem;overflow:hidden;position:relative}
 .collapsed::after{content:"show more";position:absolute;bottom:0;left:0;width:100%;text-align:center;background:linear-gradient(0deg,var(--bg) 10%,transparent);padding:.4rem 0;font-size:.75rem;color:var(--accent);cursor:pointer}
+.cid{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.7rem;color:var(--muted);margin-top:.15rem;word-break:break-all}
+.mid{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:.7rem;color:var(--muted);padding:.05rem .35rem;border:1px solid var(--line);border-radius:.4rem}
 
-.cid{
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-  font-size: .7rem;
-  color: var(--muted);
-  margin-top: .15rem;
-  word-break: break-all;
+/* Export button */
+#exportBtn{
+  display:inline-flex;align-items:center;gap:.4rem;
+  background:transparent;border:1px solid var(--accent);
+  color:var(--accent);padding:.35rem .7rem;border-radius:.4rem;
+  font-size:.8rem;cursor:pointer;transition:background .15s,color .15s;
+  white-space:nowrap;
 }
-.mid{
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-  font-size: .7rem;
-  color: var(--muted);
-  padding: .05rem .35rem;
-  border: 1px solid var(--line);
-  border-radius: .4rem;
-}
+#exportBtn:hover{background:var(--accent);color:#0c0d0e}
+#exportBtn:disabled{opacity:.35;cursor:default;pointer-events:none}
+#exportBtn svg{flex-shrink:0}
 
+/* Toast */
+#toast{
+  position:fixed;bottom:1.4rem;right:1.4rem;
+  background:#1a2030;border:1px solid var(--accent);
+  color:var(--accent);padding:.5rem 1rem;border-radius:.5rem;
+  font-size:.8rem;pointer-events:none;
+  opacity:0;transform:translateY(.4rem);
+  transition:opacity .2s,transform .2s;
+  z-index:999;
+}
+#toast.show{opacity:1;transform:translateY(0)}
 </style>
 </head>
 <body>
@@ -61,6 +70,12 @@ footer{display:flex;align-items:center;gap:.5rem;padding:.7rem 1rem;border-top:1
     <option value="cdesc">created ↓</option>
     <option value="casc">created ↑</option>
   </select>
+  <button id="exportBtn" disabled title="Export current conversation as JSON">
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M8 1v9m0 0L5 7m3 3l3-3M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    export JSON
+  </button>
   <span id="status" class="hint"></span>
 </header>
 <main>
@@ -74,32 +89,181 @@ footer{display:flex;align-items:center;gap:.5rem;padding:.7rem 1rem;border-top:1
   <label class="badge"><input type="checkbox" id="code" checked>code</label>
   <label class="badge"><input type="checkbox" id="hide" checked>hide empty</label>
 </footer>
+<div id="toast"></div>
 <script>
 (()=>{
   const $=s=>document.querySelector(s);
   const list=$('#list'),pane=$('#pane'),status=$('#status'),searchBox=$('#search'),sortSel=$('#sort'),wordChk=$('#word');
+  const exportBtn=$('#exportBtn'),toast=$('#toast');
   const filters={sys:true,tool:true,reason:true,code:true,hide:true,word:false};
   let store=[],current=null,searchTerm='';
+
+  /* ── helpers ── */
   const set=t=>status.textContent=t||'';
-  const fmt=t=>{if(!t)return'';const d=new Date(typeof t==='number'?t*1000:t);return d.toISOString().slice(0,19).replace('T',' ');};// yyyy-mm-dd hh:mm:ss
+  const fmt=t=>{if(!t)return'';const d=new Date(typeof t==='number'?t*1000:t);return d.toISOString().slice(0,19).replace('T',' ');};
   const role=m=>m.author?.role||m.role||'assistant';
   const model=m=>m.metadata?.model_slug||m.metadata?.model||'';
   const escapeHtml=s=>String(s??'').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
-  const bodyText=c=>{if(!c)return'';if(typeof c==='string')return c;if(Array.isArray(c))return c.map(bodyText).join('\n');if(c.content_type){switch(c.content_type){case'text':return bodyText(c.parts||c.text);case'user_editable_context':return (c.user_profile||'')+'\n'+(c.user_instructions||'');case'tether_quote':return (c.title||'')+' '+(c.text||'');case'thoughts':return (c.thoughts||[]).map(t=>t.summary+' '+t.content).join('\n');case'reasoning_recap':return c.content||'';case'code':return c.text||'';case'multimodal_text':return c.parts?.map(p=>p.content_type==='audio_transcription'?p.text:(typeof p==='string'?p:'')).filter(Boolean).join('\n');default:return JSON.stringify(c)}}if(c.parts)return bodyText(c.parts);return JSON.stringify(c)};
-  const renderBody=c=>{if(!c)return'';if(c.content_type==='code'){if(!filters.code)return'';const txt=c.text||'';const large=txt.length>600;return `<pre class="${large?'collapsed ':''}">${escapeHtml(txt)}</pre>`;}if(c.content_type==='multimodal_text'){const audible=c.parts?.find(p=>p.content_type==='audio_transcription');return audible?escapeHtml(audible.text):'[multimodal]';}return escapeHtml(bodyText(c));};
-  const collect=r=>Array.isArray(r.messages)?r.messages.sort((a,b)=>a.create_time-b.create_time):r.mapping?Object.values(r.mapping).filter(n=>n.message).map(n=>({...n.message})).sort((a,b)=>a.create_time-b.create_time):[];
-  const norm=r=>{const msgs=collect(r);return{id:r.id||r.conversation_id||crypto.randomUUID(),title:r.title||'(untitled)',update:r.update_time||msgs.slice(-1)[0]?.create_time,create:r.create_time||msgs[0]?.create_time,msg:msgs};};
-  const load=obj=>{store=(Array.isArray(obj)?obj:obj.conversations||obj.items||[]).map(norm);set(store.length+' chats');renderList();pane.textContent='pick →';};
-  const allowed=m=>{const r=role(m);if(!filters.sys&&r==='system')return false;if(!filters.tool&&(r==='tool'||r==='function'))return false;const ct=m.content?.content_type;if(!filters.reason&&(ct==='thoughts'||ct==='reasoning_recap'))return false;if(!filters.code&&ct==='code')return false;const body=bodyText(m.content).trim();if(filters.hide&&!body)return false;return true;};
-  const open=c=>{current=c;pane.innerHTML='';c.msg.filter(allowed).forEach(m=>{const art=document.createElement('div');art.className='msg';art.innerHTML=`<div class="hdr"><span class="role ${role(m)}">${role(m)}</span>${model(m)?`<span class="model">${model(m)}</span>`:''}${m.id?`<span class="mid">${m.id}</span>`:''}<span class="time">${fmt(m.create_time)}</span></div><div class="body">${renderBody(m.content)}</div>`;pane.appendChild(art);});if(!pane.innerHTML)pane.textContent='(all filtered)';pane.dataset.id=c.id;};
+
+  const bodyText=c=>{
+    if(!c)return'';
+    if(typeof c==='string')return c;
+    if(Array.isArray(c))return c.map(bodyText).join('\n');
+    if(c.content_type){
+      switch(c.content_type){
+        case'text':return bodyText(c.parts||c.text);
+        case'user_editable_context':return (c.user_profile||'')+'\n'+(c.user_instructions||'');
+        case'tether_quote':return (c.title||'')+' '+(c.text||'');
+        case'thoughts':return (c.thoughts||[]).map(t=>t.summary+' '+t.content).join('\n');
+        case'reasoning_recap':return c.content||'';
+        case'code':return c.text||'';
+        case'multimodal_text':return c.parts?.map(p=>p.content_type==='audio_transcription'?p.text:(typeof p==='string'?p:'')).filter(Boolean).join('\n');
+        default:return JSON.stringify(c)
+      }
+    }
+    if(c.parts)return bodyText(c.parts);
+    return JSON.stringify(c);
+  };
+
+  const renderBody=c=>{
+    if(!c)return'';
+    if(c.content_type==='code'){if(!filters.code)return'';const txt=c.text||'';const large=txt.length>600;return `<pre class="${large?'collapsed ':''}">${escapeHtml(txt)}</pre>`;}
+    if(c.content_type==='multimodal_text'){const audible=c.parts?.find(p=>p.content_type==='audio_transcription');return audible?escapeHtml(audible.text):'[multimodal]';}
+    return escapeHtml(bodyText(c));
+  };
+
+  const collect=r=>
+    Array.isArray(r.messages)
+      ? r.messages.sort((a,b)=>a.create_time-b.create_time)
+      : r.mapping
+        ? Object.values(r.mapping).filter(n=>n.message).map(n=>({...n.message})).sort((a,b)=>a.create_time-b.create_time)
+        : [];
+
+  const norm=r=>{
+    const msgs=collect(r);
+    return{id:r.id||r.conversation_id||crypto.randomUUID(),title:r.title||'(untitled)',update:r.update_time||msgs.slice(-1)[0]?.create_time,create:r.create_time||msgs[0]?.create_time,msg:msgs};
+  };
+
+  const load=obj=>{
+    store=(Array.isArray(obj)?obj:obj.conversations||obj.items||[]).map(norm);
+    set(store.length+' chats');
+    renderList();
+    pane.textContent='pick →';
+  };
+
+  const allowed=m=>{
+    const r=role(m);
+    if(!filters.sys&&r==='system')return false;
+    if(!filters.tool&&(r==='tool'||r==='function'))return false;
+    const ct=m.content?.content_type;
+    if(!filters.reason&&(ct==='thoughts'||ct==='reasoning_recap'))return false;
+    if(!filters.code&&ct==='code')return false;
+    const body=bodyText(m.content).trim();
+    if(filters.hide&&!body)return false;
+    return true;
+  };
+
+  const open=c=>{
+    current=c;
+    pane.innerHTML='';
+    c.msg.filter(allowed).forEach(m=>{
+      const art=document.createElement('div');
+      art.className='msg';
+      art.innerHTML=`<div class="hdr"><span class="role ${role(m)}">${role(m)}</span>${model(m)?`<span class="model">${model(m)}</span>`:''}${m.id?`<span class="mid">${m.id}</span>`:''}<span class="time">${fmt(m.create_time)}</span></div><div class="body">${renderBody(m.content)}</div>`;
+      pane.appendChild(art);
+    });
+    if(!pane.innerHTML)pane.textContent='(all filtered)';
+    pane.dataset.id=c.id;
+    exportBtn.disabled=false;
+  };
+
+  /* ── export ── */
+  const showToast=msg=>{
+    toast.textContent=msg;
+    toast.classList.add('show');
+    setTimeout(()=>toast.classList.remove('show'),2200);
+  };
+
+  exportBtn.onclick=()=>{
+    if(!current)return;
+
+    // Build the filtered, ordered message list exactly as displayed
+    const visibleMsgs=current.msg.filter(allowed).map(m=>({
+      id:m.id||null,
+      role:role(m),
+      model:model(m)||null,
+      create_time:m.create_time||null,
+      create_time_fmt:fmt(m.create_time)||null,
+      content_type:m.content?.content_type||'text',
+      content:bodyText(m.content),
+    }));
+
+    const exportObj={
+      id:current.id,
+      title:current.title,
+      create_time:current.create||null,
+      create_time_fmt:fmt(current.create)||null,
+      update_time:current.update||null,
+      update_time_fmt:fmt(current.update)||null,
+      filters_applied:{
+        system:filters.sys,
+        tool_fn:filters.tool,
+        reasoning:filters.reason,
+        code:filters.code,
+        hide_empty:filters.hide,
+      },
+      message_count:visibleMsgs.length,
+      messages:visibleMsgs,
+    };
+
+    const blob=new Blob([JSON.stringify(exportObj,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    const safeName=(current.title||'conversation').replace(/[^a-z0-9_\- ]/gi,'_').slice(0,60).trim();
+    a.href=url;
+    a.download=`${safeName}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`✓ exported ${visibleMsgs.length} messages`);
+  };
+
+  /* ── search / list ── */
   const escapeRe=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
   const matches=(hay,q)=>{if(!hay)return false;return filters.word?new RegExp('\\b'+escapeRe(q)+'\\b','i').test(hay):hay.includes(q);};
-  const renderList=()=>{list.innerHTML='';let filtered=store;const q=searchTerm.toLowerCase().trim();if(q){filtered=filtered.filter(c=>{if(matches(c.title.toLowerCase(),q))return true;return c.msg.some(m=>matches(bodyText(m.content).toLowerCase(),q));});}
-    filtered.sort((a,b)=>{switch(sortSel.value){case'cdesc':return b.create-a.create;case'casc':return a.create-b.create;case'uasc':return a.update-b.update;default:return b.update-a.update;}});
-    filtered.forEach(c=>{const div=document.createElement('div');div.className='conv';div.innerHTML=`<div class="title">${escapeHtml(c.title)}</div><div class="cid">${c.id}</div><div class="meta"><span>upd ${fmt(c.update)}</span><span>cre ${fmt(c.create)}</span></div>`;div.onclick=()=>open(c);list.appendChild(div);});if(!filtered.length)list.innerHTML='<div class="empty">no match</div>';};
+
+  const renderList=()=>{
+    list.innerHTML='';
+    let filtered=store;
+    const q=searchTerm.toLowerCase().trim();
+    if(q){
+      filtered=filtered.filter(c=>{
+        if(matches(c.title.toLowerCase(),q))return true;
+        return c.msg.some(m=>matches(bodyText(m.content).toLowerCase(),q));
+      });
+    }
+    filtered.sort((a,b)=>{
+      switch(sortSel.value){
+        case'cdesc':return b.create-a.create;
+        case'casc':return a.create-b.create;
+        case'uasc':return a.update-b.update;
+        default:return b.update-a.update;
+      }
+    });
+    filtered.forEach(c=>{
+      const div=document.createElement('div');
+      div.className='conv';
+      div.innerHTML=`<div class="title">${escapeHtml(c.title)}</div><div class="cid">${c.id}</div><div class="meta"><span>upd ${fmt(c.update)}</span><span>cre ${fmt(c.create)}</span></div>`;
+      div.onclick=()=>open(c);
+      list.appendChild(div);
+    });
+    if(!filtered.length)list.innerHTML='<div class="empty">no match</div>';
+  };
+
+  /* ── events ── */
   $('#file').onchange=e=>{const f=e.target.files[0];if(!f)return;f.text().then(t=>load(JSON.parse(t))).catch(()=>set('parse err'));};
-  document.addEventListener('dragover',e=>e.preventDefault());document.addEventListener('drop',e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(!f)return;f.text().then(t=>load(JSON.parse(t))).catch(()=>set('parse err'));});
-  ['sys','tool','reason','code','hide'].forEach(id=>$('#'+id).onchange=e=>{filters[id]=e.target.checked;if(current)open(current);} );
+  document.addEventListener('dragover',e=>e.preventDefault());
+  document.addEventListener('drop',e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(!f)return;f.text().then(t=>load(JSON.parse(t))).catch(()=>set('parse err'));});
+  ['sys','tool','reason','code','hide'].forEach(id=>$('#'+id).onchange=e=>{filters[id]=e.target.checked;if(current)open(current);});
   wordChk.onchange=e=>{filters.word=e.target.checked;renderList();};
   searchBox.oninput=e=>{searchTerm=e.target.value.toLowerCase();renderList();};
   sortSel.onchange=renderList;
